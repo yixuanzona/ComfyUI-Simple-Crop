@@ -1,0 +1,5 @@
+[project]
+name = "comfyui-simple-crop"
+description = "A single, visual image/video-frame crop node: drag a box on the preview, IMAGE in, IMAGE out."
+version = "0.1.0"
+dependencies = []
