@@ -12,6 +12,34 @@ function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
 }
 
+// Place a crop rectangle from one image onto another of a different size. Mirrors
+// map_crop_rect() in nodes.py — see that docstring for why the rectangle's shape is
+// preserved instead of scaling each axis by its own fraction.
+function mapRectAcross(rect, srcSize, dstSize) {
+  const nx = rect.x / srcSize.w, ny = rect.y / srcSize.h;
+  const nw = rect.width / srcSize.w, nh = rect.height / srcSize.h;
+  if (!(nw > 0) || !(nh > 0)) return rect;
+
+  const aspect = rect.width / rect.height;
+  const byWidth = [nw * dstSize.w, (nw * dstSize.w) / aspect];
+  const byHeight = [nh * dstSize.h * aspect, nh * dstSize.h];
+
+  const fitting = [byWidth, byHeight].filter(
+    (c) => c[0] <= dstSize.w + 0.5 && c[1] <= dstSize.h + 0.5);
+  let boxW, boxH;
+  if (fitting.length) {
+    [boxW, boxH] = fitting.reduce((a, b) => (a[0] * a[1] >= b[0] * b[1] ? a : b));
+  } else {
+    const shrink = Math.min(dstSize.w / byWidth[0], dstSize.h / byWidth[1]);
+    boxW = byWidth[0] * shrink;
+    boxH = byWidth[1] * shrink;
+  }
+
+  const x = clamp((nx + nw / 2) * dstSize.w - boxW / 2, 0, dstSize.w - boxW);
+  const y = clamp((ny + nh / 2) * dstSize.h - boxH / 2, 0, dstSize.h - boxH);
+  return { x, y, width: boxW, height: boxH };
+}
+
 // Hit-test the crop rectangle in canvas-pixel space; returns a drag mode or null.
 function rectHitTest(mx, my, x1, y1, x2, y2, r) {
   const nearL = Math.abs(mx - x1) < r;
@@ -338,18 +366,12 @@ function setupCropWidget(node) {
     const rect = readNodeRect(syncSourceNode);
     if (!rect) return;
 
-    // Match the backend: the rectangle is shared as fractions of each source's own
-    // size, so a 960x540 video and a 1024x1024 still end up framing the same relative
-    // region rather than blindly reusing each other's pixel numbers.
+    // Match the backend's placement exactly (see mapRectAcross).
     const srcSize = syncSourceNode._simpleCropSourceSize;
     let target = rect;
     if (srcSize?.w && srcSize?.h && state.naturalWidth && state.naturalHeight) {
-      target = {
-        x: (rect.x / srcSize.w) * state.naturalWidth,
-        y: (rect.y / srcSize.h) * state.naturalHeight,
-        width: (rect.width / srcSize.w) * state.naturalWidth,
-        height: (rect.height / srcSize.h) * state.naturalHeight,
-      };
+      target = mapRectAcross(rect, srcSize,
+                             { w: state.naturalWidth, h: state.naturalHeight });
     } else if (srcSize?.w && srcSize?.h) {
       // Our own preview hasn't resolved yet, so there's nothing to scale onto — leave
       // the box alone rather than showing a wrongly-scaled one. Execution is unaffected:

@@ -16,8 +16,9 @@ to crop an image or a video (frame batch). `IMAGE` in, `IMAGE` out.
 - Optional `crop_info` output/input: connect one Simple Crop node's `crop_info`
   into another's to make it reuse the same rectangle — handy for keeping a
   video crop and its separately rendered first-frame crop in sync. The rectangle
-  is shared as a proportion of each source, so the two sides stay framed the same
-  way even at different resolutions (e.g. a 960x540 video and a 1024x1024 still).
+  keeps its shape and relative placement when the two sources differ in size or
+  aspect ratio (e.g. a 1920x1080 video and a 1024x848 render), so both crops come
+  out with the same aspect ratio.
 
 ## Install
 
