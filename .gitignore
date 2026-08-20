@@ -4,3 +4,6 @@ __pycache__/
 
 # Local test footage/renders — kept out of the repo to avoid shipping large binaries.
 TESTUSE/
+
+# Full-size demo recordings; the repo ships the compressed versions in demo/.
+demo/original_uncompressed/

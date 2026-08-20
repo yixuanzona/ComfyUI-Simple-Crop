@@ -1,49 +1,75 @@
 # ComfyUI Simple Crop
 
-A single, visual crop node for ComfyUI: drag a box directly on the node's preview
-to crop an image or a video (frame batch). `IMAGE` in, `IMAGE` out.
+A crop node you operate by dragging a box on the node itself. `IMAGE` in,
+`IMAGE` out — the same node handles a single image or a whole video frame
+batch, because ComfyUI's `IMAGE` type is already a batch.
 
-## Features
+The preview appears as soon as you connect a source, so you can set the crop
+without running the workflow first.
 
-- Drag-to-crop right on the node — no separate preview node needed.
-- Works the same way on images and video frame batches, since ComfyUI's `IMAGE`
-  type is already a batch (`[B, H, W, C]`).
-- Live preview before you even run the workflow — works with `LoadImage`,
-  VideoHelperSuite's `Load Video`, and ComfyUI's built-in `Load Video` + `Get
-  Video Components`.
-- After running once, the node's own preview updates to the cropped result, so
-  you can sanity-check the crop at a glance.
-- Optional `crop_info` output/input: connect one Simple Crop node's `crop_info`
-  into another's to make it reuse the same rectangle — handy for keeping a
-  video crop and its separately rendered first-frame crop in sync. The rectangle
-  keeps its shape and relative placement when the two sources differ in size or
-  aspect ratio (e.g. a 1920x1080 video and a 1024x848 render), so both crops come
-  out with the same aspect ratio.
-
-## Install
-
-Copy (or symlink) this folder into ComfyUI's `custom_nodes/` directory, then
-restart ComfyUI.
+![Basic operation](demo/tips01.gif)
 
 ## Usage
 
 1. Connect any `IMAGE` output into `Simple Crop`.
-2. A preview of the source appears on the node. Drag the corners, edges, or
-   inside of the blue box to set the crop region — or type exact `x` / `y` /
-   `width` / `height` values below it.
-3. Run the workflow. The `IMAGE` output can go to `SaveImage`, VideoHelperSuite's
-   `Video Combine`, or any other node that takes `IMAGE`.
-4. To keep two crops in sync (e.g. a video and its first frame), connect one
-   node's `crop_info` output into another node's `crop_info` input. The
-   receiving node's box then follows the source node's box live, rescaled to
-   its own resolution, and its x/y/width/height become read-only.
+2. Drag the corners, edges, or inside of the box to set the region — or type
+   exact `x` / `y` / `width` / `height` values below the preview.
+3. Send the `IMAGE` output wherever you need it: `SaveImage`, VideoHelperSuite's
+   `Video Combine`, an upscaler, a sampler, and so on.
+
+After a run, the node's preview switches to the cropped result so you can check
+the framing at a glance.
+
+### Where this is useful
+
+When you build a test pipeline around a reference video — layout, previs, a
+render pass you're driving something with — the part you actually care about is
+often a small region of the frame. Rendering layers separately, or feeding one
+object to a model, usually means cropping in and scaling that object up so it
+reads clearly.
+
+Doing that in an editor means leaving ComfyUI, re-cutting, re-exporting, and
+coming back every time the framing changes. This keeps it in the graph, and you
+can see the crop while you set it.
+
+![Syncing a crop to the first frame](demo/tips02.gif)
+
+### Keeping a still in sync with the video
+
+A reference video is often paired with a separately rendered first frame. Both
+need the same framing, or they don't describe the same shot.
+
+Connect the video crop node's `crop_info` output into the still's `crop_info`
+input. The second node then mirrors the first live, and its `x` / `y` /
+`width` / `height` become read-only. Disconnect to edit it again.
+
+The two sources rarely match in size — a 1920x1080 video next to a 1024x848
+render is normal. The rectangle is transferred as a proportion and keeps its
+aspect ratio, so both crops come out the same shape, positioned equivalently,
+rather than reusing raw pixel numbers that would frame different regions.
+
+An example graph covering both halves is in
+[`example_workflow/`](example_workflow/SimpleCrop_demoWorkflow.json).
+
+## Install
+
+Copy (or clone) this folder into ComfyUI's `custom_nodes/`, then restart
+ComfyUI. No extra Python dependencies.
 
 ## Notes
 
-- If you swap the file on an upstream loader, press **Refresh preview** on the
-  crop node to pull in the new frame.
-- Some decoders hand over codec-aligned frames (e.g. 960x544 for a 960x540
-  video). The node crops what it actually receives, and after one run the preview
-  re-syncs to that exact size, so the box matches the real output.
-
-See [SPEC.md](SPEC.md) for design notes.
+- **Video input:** VideoHelperSuite's `Load Video` is the smoothest pairing — it
+  outputs `IMAGE` directly and carries its own live preview, so the crop box
+  tracks the playing frame. ComfyUI's built-in `Load Video` outputs `VIDEO`
+  instead, so it needs `Get Video Components` in between to reach `IMAGE`; that
+  works too, and the preview falls back to a still frame from the source file.
+- **Swapping a source file** on an upstream loader doesn't refresh the preview
+  automatically — press **Refresh preview** on the crop node.
+- **Odd output heights:** some decoders hand over codec-aligned frames (960x544
+  for a 960x540 video). The node crops what it actually receives; after one run
+  the preview re-syncs to that exact size so the box matches the real output.
+- **Syncing is geometric, not content-aware.** It matches the rectangle, not the
+  subject. If the two sources are framed differently to begin with (the object
+  sits at a different scale in each), you'll still want to nudge one side. Core
+  `Image Compare`, or `Image Blend` in `difference` mode, are handy for checking
+  the result.
