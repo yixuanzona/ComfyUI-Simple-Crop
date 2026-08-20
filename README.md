@@ -15,7 +15,9 @@ to crop an image or a video (frame batch). `IMAGE` in, `IMAGE` out.
   you can sanity-check the crop at a glance.
 - Optional `crop_info` output/input: connect one Simple Crop node's `crop_info`
   into another's to make it reuse the same rectangle — handy for keeping a
-  video crop and its extracted first-frame crop in sync.
+  video crop and its separately rendered first-frame crop in sync. The rectangle
+  is shared as a proportion of each source, so the two sides stay framed the same
+  way even at different resolutions (e.g. a 960x540 video and a 1024x1024 still).
 
 ## Install
 
@@ -32,6 +34,15 @@ restart ComfyUI.
    `Video Combine`, or any other node that takes `IMAGE`.
 4. To keep two crops in sync (e.g. a video and its first frame), connect one
    node's `crop_info` output into another node's `crop_info` input. The
-   receiving node's box then follows the source node's box live.
+   receiving node's box then follows the source node's box live, rescaled to
+   its own resolution, and its x/y/width/height become read-only.
+
+## Notes
+
+- If you swap the file on an upstream loader, press **Refresh preview** on the
+  crop node to pull in the new frame.
+- Some decoders hand over codec-aligned frames (e.g. 960x544 for a 960x540
+  video). The node crops what it actually receives, and after one run the preview
+  re-syncs to that exact size, so the box matches the real output.
 
 See [SPEC.md](SPEC.md) for design notes.

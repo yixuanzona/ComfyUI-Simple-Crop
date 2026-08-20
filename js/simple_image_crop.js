@@ -1,7 +1,6 @@
 import { app } from "../../scripts/app.js";
 
 const NODE_NAME = "SimpleCrop";
-const DEFAULT_RECT = { x: 0, y: 0, width: 512, height: 512 };
 const HANDLE_HIT = 10;
 // Placeholder height before any media is loaded. Once a media size is known, the
 // canvas's real pixel resolution and displayed size both track it exactly (no caps) —
@@ -73,6 +72,27 @@ function nodePreviewUrl(node) {
 
 function looksLikeVideoUrl(url) {
   return /filename=[^&]*\.(mp4|webm|mov|mkv|avi|m4v)(&|$)/i.test(url);
+}
+
+// The exact resolution the backend saw for this node's image input on its last run,
+// reported back through the node's UI payload. Preview elements can disagree with it:
+// a video decoder may emit codec-aligned frames (960x544 for a 960x540 video) that the
+// browser only ever shows cropped to 960x540, which would skew the crop box slightly.
+function executedSourceSize(node) {
+  const s = app.nodeOutputs?.[node.id]?.simple_crop_source_size;
+  if (!Array.isArray(s) || !(s[0] > 0) || !(s[1] > 0)) return null;
+  return { w: s[0], h: s[1] };
+}
+
+// Only trust the reported size as a *refinement* of what the preview element itself
+// reports. If they differ wildly the reported size is stale (the input was swapped
+// since that run), so the element's own size is the safer basis.
+function refineSize(reported, elementSize) {
+  if (!reported) return null;
+  if (!elementSize?.w || !elementSize?.h) return reported;
+  const dw = Math.abs(reported.w - elementSize.w) / elementSize.w;
+  const dh = Math.abs(reported.h - elementSize.h) / elementSize.h;
+  return (dw <= 0.05 && dh <= 0.05) ? reported : null;
 }
 
 // Load a raw video file (e.g. core LoadVideo's uploaded source, served as-is via /view —
@@ -277,7 +297,12 @@ function setupCropWidget(node) {
     dragMode: null,
     dragStart: null,
     rectAtDragStart: null,
-    autoFitDone: false,
+    // Once the box has been set deliberately — dragged, typed, or restored from a saved
+    // workflow — it is never auto-fitted over again.
+    userAdjusted: false,
+    // Source size the box was last auto-fitted to, so a source that resolves late or in
+    // stages (or gets swapped) re-fits instead of keeping a box sized for the old one.
+    fittedTo: null,
   };
   let watchedVideoEl = null;
   let syncSourceNode = null;
@@ -312,27 +337,51 @@ function setupCropWidget(node) {
     if (!syncSourceNode) return;
     const rect = readNodeRect(syncSourceNode);
     if (!rect) return;
+
+    // Match the backend: the rectangle is shared as fractions of each source's own
+    // size, so a 960x540 video and a 1024x1024 still end up framing the same relative
+    // region rather than blindly reusing each other's pixel numbers.
+    const srcSize = syncSourceNode._simpleCropSourceSize;
+    let target = rect;
+    if (srcSize?.w && srcSize?.h && state.naturalWidth && state.naturalHeight) {
+      target = {
+        x: (rect.x / srcSize.w) * state.naturalWidth,
+        y: (rect.y / srcSize.h) * state.naturalHeight,
+        width: (rect.width / srcSize.w) * state.naturalWidth,
+        height: (rect.height / srcSize.h) * state.naturalHeight,
+      };
+    } else if (srcSize?.w && srcSize?.h) {
+      // Our own preview hasn't resolved yet, so there's nothing to scale onto — leave
+      // the box alone rather than showing a wrongly-scaled one. Execution is unaffected:
+      // the backend rescales from crop_info regardless of what these widgets say.
+      return;
+    }
+
+    // Compare against the clamped result, not the raw target: a target that clamps
+    // (e.g. scaled slightly past the edge) would otherwise never compare equal and
+    // would re-set + redraw on every poll tick.
     const cur = getRect();
-    if (rect.x !== cur.x || rect.y !== cur.y || rect.width !== cur.width || rect.height !== cur.height) {
-      state.autoFitDone = true;
-      setRect(rect);
+    const next = clampRect(target);
+    if (next.x !== cur.x || next.y !== cur.y ||
+        next.width !== cur.width || next.height !== cur.height) {
+      setRect(next);
     }
   }
 
-  function isDefaultRect() {
-    const r = getRect();
-    return r.x === DEFAULT_RECT.x && r.y === DEFAULT_RECT.y &&
-      r.width === DEFAULT_RECT.width && r.height === DEFAULT_RECT.height;
+  function clampRect(rect) {
+    const nw = state.naturalWidth || 999999;
+    const nh = state.naturalHeight || 999999;
+    const x = clamp(Math.round(rect.x), 0, Math.max(0, nw - 1));
+    const y = clamp(Math.round(rect.y), 0, Math.max(0, nh - 1));
+    return {
+      x, y,
+      width: clamp(Math.round(rect.width), 1, nw - x),
+      height: clamp(Math.round(rect.height), 1, nh - y),
+    };
   }
 
   function setRect(rect) {
-    const nw = state.naturalWidth || 999999;
-    const nh = state.naturalHeight || 999999;
-    let { x, y, width, height } = rect;
-    x = clamp(Math.round(x), 0, Math.max(0, nw - 1));
-    y = clamp(Math.round(y), 0, Math.max(0, nh - 1));
-    width = clamp(Math.round(width), 1, nw - x);
-    height = clamp(Math.round(height), 1, nh - y);
+    const { x, y, width, height } = clampRect(rect);
     xW.value = x;
     yW.value = y;
     wW.value = width;
@@ -491,7 +540,7 @@ function setupCropWidget(node) {
       y = clamp(y, 0, Math.max(0, state.naturalHeight - height));
     }
 
-    state.autoFitDone = true;
+    state.userAdjusted = true;
     setRect({ x, y, width, height });
   }
 
@@ -530,6 +579,9 @@ function setupCropWidget(node) {
     state.mediaEl = el;
     state.naturalWidth = sz.w;
     state.naturalHeight = sz.h;
+    // Published on the node itself so a downstream node syncing from this one can read
+    // the resolution these pixel values are relative to (closures aren't reachable).
+    node._simpleCropSourceSize = { w: sz.w, h: sz.h };
     if (source === "own") {
       setStatus("Preview: last cropped output");
     } else if (sizeConfirmed === false) {
@@ -537,17 +589,21 @@ function setupCropWidget(node) {
     } else {
       setStatus("Preview: connected input");
     }
-    if (!state.autoFitDone && isDefaultRect()) {
-      state.autoFitDone = true;
+    // Fit the box to the whole source whenever the source size changes, unless the user
+    // has set the box deliberately (or it is being driven by an upstream crop_info).
+    const sizeChanged = !state.fittedTo || state.fittedTo.w !== sz.w || state.fittedTo.h !== sz.h;
+    if (!state.userAdjusted && !syncSourceNode && sizeChanged) {
+      state.fittedTo = { w: sz.w, h: sz.h };
       setRect({ x: 0, y: 0, width: sz.w, height: sz.h });
     }
     drawCanvas();
   }
 
-  function loadPreviewFromUrl(url, source) {
+  function loadPreviewFromUrl(url, source, sizeOverride) {
     if (!url) return false;
     const img = new Image();
-    img.onload = () => attachMedia(img, source);
+    img.onload = () => attachMedia(
+      img, source, refineSize(sizeOverride, mediaSize(img)), sizeOverride ? true : undefined);
     img.src = url;
     return true;
   }
@@ -562,12 +618,25 @@ function setupCropWidget(node) {
     const upstream = await resolveUpstreamPreview(node);
     if (seq !== refreshSeq) return;
 
+    // Prefer the resolution the backend actually received on the last run over any
+    // size inferred from a preview element or a metadata endpoint.
+    const reported = executedSourceSize(node);
+
     if (upstream?.el) {
-      attachMedia(upstream.el, "upstream", upstream.sizeOverride, upstream.sizeConfirmed);
+      // Compare against the size we would otherwise use, not the element's own pixels:
+      // a VHS preview element is deliberately downscaled (e.g. 443x250 standing in for
+      // 960x540), so it is not a valid reference for "is the reported size stale?".
+      const baseline = upstream.sizeOverride || mediaSize(upstream.el);
+      const exact = refineSize(reported, baseline);
+      attachMedia(upstream.el, "upstream",
+                  exact || upstream.sizeOverride,
+                  exact ? true : upstream.sizeConfirmed);
       return;
     }
-    if (upstream?.url && loadPreviewFromUrl(upstream.url, "upstream")) return;
+    if (upstream?.url && loadPreviewFromUrl(upstream.url, "upstream", reported)) return;
 
+    // The node's own last output is the *cropped* result, so its dimensions are the
+    // crop size — never the source size. Don't override it with `reported`.
     const ownUrl = nodePreviewUrl(node);
     if (ownUrl && loadPreviewFromUrl(ownUrl, "own")) return;
 
@@ -581,7 +650,7 @@ function setupCropWidget(node) {
     const origCallback = w.callback;
     w.callback = function (...args) {
       const r = origCallback?.apply(this, args);
-      state.autoFitDone = true;
+      state.userAdjusted = true;
       drawCanvas();
       return r;
     };
@@ -610,7 +679,7 @@ function setupCropWidget(node) {
   node.onConfigure = function (...args) {
     const r = origOnConfigure?.apply(this, args);
     // A saved workflow already carries an explicit crop rect; never auto-fit over it.
-    state.autoFitDone = true;
+    state.userAdjusted = true;
     setTimeout(refreshPreview, 50);
     return r;
   };

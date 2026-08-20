@@ -1,8 +1,13 @@
 from comfy_api.latest import io, ui
 
-# Bundles x/y/width/height so one Simple Crop node's rect can drive another's
-# (e.g. keep a video crop and its extracted first-frame crop in sync) with a single
-# connection instead of wiring four separate INT sockets.
+# Carries a crop rectangle from one Simple Crop node to another (e.g. to keep a video
+# crop and a separately rendered first-frame crop framed the same way) over a single
+# connection instead of four INT sockets.
+#
+# The rectangle travels NORMALIZED (0-1 fractions of the source's width/height), not in
+# pixels: the two sources routinely differ in resolution — a 960x540 video paired with a
+# 1024x1024 rendered still — and copying raw pixel values across would silently frame a
+# different region on each. Fractions keep the same relative region on both.
 CropInfo = io.Custom("SIMPLE_CROP_INFO")
 
 
@@ -48,7 +53,11 @@ class SimpleCrop(io.ComfyNode):
         _b, h, w, _c = image.shape
 
         if crop_info is not None:
-            x, y, width, height = crop_info["x"], crop_info["y"], crop_info["width"], crop_info["height"]
+            # Scale the incoming fractions onto this image's own resolution.
+            x = round(crop_info["x"] * w)
+            y = round(crop_info["y"] * h)
+            width = round(crop_info["width"] * w)
+            height = round(crop_info["height"] * h)
 
         x0 = max(0, min(int(x), w - 1))
         y0 = max(0, min(int(y), h - 1))
@@ -56,9 +65,22 @@ class SimpleCrop(io.ComfyNode):
         y1 = max(y0 + 1, min(y0 + int(height), h))
 
         cropped = image[:, y0:y1, x0:x1, :]
-        used_rect = {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0}
+        used_rect = {
+            "x": x0 / w,
+            "y": y0 / h,
+            "width": (x1 - x0) / w,
+            "height": (y1 - y0) / h,
+            "source_width": w,
+            "source_height": h,
+        }
 
         # Only preview the first frame: for a video-length batch, previewing every
         # frame would render a whole filmstrip under the node. The full batch is
         # still returned as the actual data output below.
-        return io.NodeOutput(cropped, used_rect, ui=ui.PreviewImage(cropped[:1], cls=cls))
+        payload = ui.PreviewImage(cropped[:1], cls=cls).as_dict()
+        # Report the resolution actually received, so the UI can draw the crop box
+        # against the real tensor rather than a guess. These can disagree: a decoder
+        # may hand over a codec-aligned frame (e.g. 960x544 for a video whose display
+        # size is 960x540), which the browser never shows.
+        payload["simple_crop_source_size"] = [w, h]
+        return io.NodeOutput(cropped, used_rect, ui=payload)
