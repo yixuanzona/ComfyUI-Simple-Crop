@@ -58,11 +58,12 @@ ComfyUI. No extra Python dependencies.
 
 ## Notes
 
-- **Video input:** VideoHelperSuite's `Load Video` is the smoothest pairing. It
-  outputs `IMAGE` directly and carries its own live preview, so the crop box
-  tracks the playing frame. ComfyUI's built-in `Load Video` outputs `VIDEO`
-  instead, so it needs `Get Video Components` in between to reach `IMAGE`; that
-  works too, and the preview falls back to a still frame from the source file.
+- **Video input:** both work, and both preview in motion. VideoHelperSuite's
+  `Load Video` outputs `IMAGE` directly, and the crop node borrows that node's
+  own preview. ComfyUI's built-in `Load Video` outputs `VIDEO` instead, so it
+  needs `Get Video Components` in between to reach `IMAGE`; the crop node then
+  plays the source file itself. Playback pauses when the node is collapsed or
+  the tab is in the background.
 - **Swapping a source file** on an upstream loader doesn't refresh the preview
   automatically. Press **Refresh preview** on the crop node.
 - **Odd output heights:** some decoders hand over codec-aligned frames (960x544
@@ -73,3 +74,13 @@ ComfyUI. No extra Python dependencies.
   sits at a different scale in each), you'll still want to nudge one side. Core
   `Image Compare`, or `Image Blend` in `difference` mode, are handy for checking
   the result.
+
+## Acknowledgements
+
+- [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite)
+  for the video nodes this pairs with. The live preview reads VHS's own preview
+  widget at runtime, so credit where it's due (and note that it depends on an
+  internal detail of theirs, not a public API).
+- [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes), whose
+  `Image Transform` node was a useful reference for how an on-canvas crop box
+  can work in ComfyUI.

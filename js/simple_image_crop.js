@@ -123,17 +123,24 @@ function refineSize(reported, elementSize) {
   return (dw <= 0.05 && dh <= 0.05) ? reported : null;
 }
 
-// Load a raw video file (e.g. core LoadVideo's uploaded source, served as-is via /view —
-// no VHS-style downscaling involved) far enough to read its true dimensions and grab one
-// visible frame. preload="metadata" avoids pulling the whole file over the network; the
-// small seek afterwards nudges the browser to actually decode a frame instead of leaving
-// the canvas blank. Times out rather than hanging refreshPreview if seeking never resolves
-// (e.g. the server doesn't support range requests).
+// Load a raw video file (e.g. core LoadVideo's uploaded source, served as-is via /view)
+// and loop it, so the crop box can be judged against the motion rather than one frozen
+// frame. Unlike VideoHelperSuite there is no downscaled proxy to borrow here, so this is
+// the full-resolution file; /view serves HTTP range requests, so the browser streams it
+// progressively instead of fetching the whole thing up front.
+//
+// Resolves once a frame is actually decoded (playing alone can leave the canvas blank),
+// and times out rather than hanging refreshPreview if that never happens.
 function tryLoadRawVideo(url) {
   return new Promise((resolve) => {
     const v = document.createElement("video");
     v.muted = true;
-    v.preload = "metadata";
+    v.loop = true;
+    v.playsInline = true;
+    v.preload = "auto";
+    // Marks this element as ours to pause and dispose of. A borrowed VideoHelperSuite
+    // element must never be touched that way: its own node depends on it playing.
+    v._simpleCropOwned = true;
     let settled = false;
     const finish = (result) => {
       if (settled) return;
@@ -141,14 +148,12 @@ function tryLoadRawVideo(url) {
       resolve(result);
     };
     v.onerror = () => finish(null);
-    v.onloadedmetadata = () => {
-      try {
-        v.currentTime = Math.min(0.1, (v.duration || 1) / 2);
-      } catch (e) {
-        finish(v);
-      }
+    v.onloadeddata = () => {
+      // Autoplay is permitted for muted video, but a rejected play() must not stop us
+      // from showing the frame we already have.
+      Promise.resolve(v.play()).catch(() => {});
+      finish(v);
     };
-    v.onseeked = () => finish(v);
     setTimeout(() => finish(v.readyState > 0 ? v : null), 4000);
     v.src = url;
   });
@@ -578,12 +583,54 @@ function setupCropWidget(node) {
     if (!state.dragging) drawCanvas();
   }
 
+  // A video we created ourselves, as opposed to one borrowed from another node's preview
+  // widget. Only our own may be paused or torn down.
+  function isOwnVideo(el) {
+    return !!el && el.tagName === "VIDEO" && el._simpleCropOwned;
+  }
+
+  function releaseVideo(el) {
+    if (!isOwnVideo(el)) return;
+    el.pause();
+    // Drop the source so the browser stops buffering the file in the background.
+    el.removeAttribute("src");
+    el.load();
+  }
+
   function watchVideo(el) {
     if (watchedVideoEl === el) return;
-    if (watchedVideoEl) watchedVideoEl.removeEventListener("timeupdate", onVideoTimeUpdate);
+    if (watchedVideoEl) {
+      watchedVideoEl.removeEventListener("timeupdate", onVideoTimeUpdate);
+      releaseVideo(watchedVideoEl);
+    }
     watchedVideoEl = el;
     if (watchedVideoEl) watchedVideoEl.addEventListener("timeupdate", onVideoTimeUpdate);
   }
+
+  // Keep our own playback tied to whether the preview can actually be seen, so a graph
+  // full of crop nodes isn't decoding video nobody is looking at.
+  let previewVisible = true;
+  function updatePlayback() {
+    const el = state.mediaEl;
+    if (!isOwnVideo(el) || !el.src) return;
+    const shouldPlay = previewVisible && !document.hidden && !node.flags?.collapsed;
+    if (shouldPlay && el.paused) Promise.resolve(el.play()).catch(() => {});
+    else if (!shouldPlay && !el.paused) el.pause();
+  }
+
+  // Fail open. Under some hosts the observer never reports the widget as visible at all
+  // (it is laid out at zero size, or never composited), and gating playback on that
+  // would leave the preview permanently frozen. So only let it pause us once it has
+  // actually reported visibility at least once.
+  let observerEverSawVisible = false;
+  const visibilityObserver = new IntersectionObserver((entries) => {
+    const visible = entries.some((e) => e.isIntersecting);
+    if (visible) observerEverSawVisible = true;
+    previewVisible = visible || !observerEverSawVisible;
+    updatePlayback();
+  });
+  visibilityObserver.observe(wrapper);
+  document.addEventListener("visibilitychange", updatePlayback);
 
   // Adopt a resolved media element (<img> or <video>, possibly one owned by another
   // node's own preview widget) as our background. Waits for its natural size to be
@@ -618,6 +665,7 @@ function setupCropWidget(node) {
       state.fittedTo = { w: sz.w, h: sz.h };
       setRect({ x: 0, y: 0, width: sz.w, height: sz.h });
     }
+    updatePlayback();
     drawCanvas();
   }
 
@@ -638,7 +686,12 @@ function setupCropWidget(node) {
   async function refreshPreview() {
     const seq = ++refreshSeq;
     const upstream = await resolveUpstreamPreview(node);
-    if (seq !== refreshSeq) return;
+    if (seq !== refreshSeq) {
+      // A newer call superseded this one. Any video it opened along the way would keep
+      // streaming unnoticed, so shut it down here.
+      releaseVideo(upstream?.el);
+      return;
+    }
 
     // Prefer the resolution the backend actually received on the last run over any
     // size inferred from a preview element or a metadata endpoint.
@@ -716,6 +769,8 @@ function setupCropWidget(node) {
   const origOnRemoved = node.onRemoved;
   node.onRemoved = function (...args) {
     watchVideo(null);
+    visibilityObserver.disconnect();
+    document.removeEventListener("visibilitychange", updatePlayback);
     clearInterval(syncPollInterval);
     return origOnRemoved?.apply(this, args);
   };
