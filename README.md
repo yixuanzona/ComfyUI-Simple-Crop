@@ -58,29 +58,23 @@ ComfyUI. No extra Python dependencies.
 
 ## Notes
 
-- **Video input:** both work, and both preview in motion. VideoHelperSuite's
-  `Load Video` outputs `IMAGE` directly, and the crop node borrows that node's
-  own preview. ComfyUI's built-in `Load Video` outputs `VIDEO` instead, so it
-  needs `Get Video Components` in between to reach `IMAGE`; the crop node then
-  plays the source file itself. Playback pauses when the node is collapsed or
-  the tab is in the background.
+- **Video input:** two ways in, both with a moving preview. VideoHelperSuite's
+  `Load Video` connects straight to this node. ComfyUI's built-in `Load Video`
+  needs a `Get Video Components` node in between. The preview pauses when the
+  node is collapsed or the tab is in the background.
 - **Swapping a source file** on an upstream loader doesn't refresh the preview
   automatically. Press **Refresh preview** on the crop node.
-- **Odd output heights:** some decoders hand over codec-aligned frames (960x544
-  for a 960x540 video). The node crops what it actually receives; after one run
-  the preview re-syncs to that exact size so the box matches the real output.
-- **Syncing is geometric, not content-aware.** It matches the rectangle, not the
-  subject. If the two sources are framed differently to begin with (the object
-  sits at a different scale in each), you'll still want to nudge one side. Core
-  `Image Compare`, or `Image Blend` in `difference` mode, are handy for checking
-  the result.
+- **Odd output heights:** some videos decode a few pixels taller than their
+  stated size (960x544 for a 960x540 file). The node crops what it is actually
+  given, and the preview corrects itself after one run.
+- **Syncing matches the box, not the subject.** If the object sits at a
+  different size or place in your two sources to begin with, the synced box
+  won't magically line it up, so expect to nudge one side. `Image Compare` or
+  `Image Blend` (difference mode) help you check.
 
-## Acknowledgements
+## Reference
 
 - [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite)
-  for the video nodes this pairs with. The live preview reads VHS's own preview
-  widget at runtime, so credit where it's due (and note that it depends on an
-  internal detail of theirs, not a public API).
-- [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes), whose
-  `Image Transform` node was a useful reference for how an on-canvas crop box
-  can work in ComfyUI.
+  for the video preview.
+- [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes) `Image Transform`
+  for the on-canvas crop box.
