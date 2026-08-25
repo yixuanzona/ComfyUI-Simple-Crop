@@ -72,6 +72,10 @@ ComfyUI. No extra Python dependencies.
   won't magically line it up, so expect to nudge one side. `Image Compare` or
   `Image Blend` (difference mode) help you check.
 
+## License
+
+MIT. See [LICENSE](LICENSE).
+
 ## Reference
 
 - [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite)
